@@ -14,8 +14,8 @@ exit /b
 #>
 
 $ScriptPath = $env:SCRIPT_PATH
-$AppVersion = "1.0"
-$UpdateUrl = "https://raw.githubusercontent.com/ВАШ_ПОЛЬЗОВАТЕЛЬ/ВАШ_РЕПОЗИТОРИЙ/main/dns.bat"
+$AppVersion = "1.1"
+$UpdateUrl = "https://raw.githubusercontent.com/D1verlin/DNS-Manager/main/dns.bat"
 
 $e = [char]27
 [Console]::CursorVisible = $false
