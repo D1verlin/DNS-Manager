@@ -14,199 +14,242 @@ exit /b
 #>
 
 $ScriptPath = $env:SCRIPT_PATH
-$AppVersion = "1.1"
-$UpdateUrl = "https://raw.githubusercontent.com/D1verlin/DNS-Manager/main/dns.bat"
+$AppVersion = "1.2"
+$UpdateUrl  = "https://raw.githubusercontent.com/D1verlin/DNS-Manager/main/dns.bat"
 
-$e = [char]27
+$e       = [char]27
+$MenuRow = 13   # Строка старта меню/панелей (шапка 11 строк + статус + пустая)
+
 [Console]::CursorVisible = $false
+[Console]::Title = "DNS Manager v$AppVersion"
 
-function Set-XboxDNS {
-    $IPV4 = @("111.88.96.50", "111.88.96.51")
-    $IPV6 = @("2a00:ab00:1233:26::50", "2a00:ab00:1233:26::51")
-    Apply-DNS -DnsList ($IPV4 + $IPV6) -DoHTemplate "https://xbox-dns.ru/dns-query" "XBOX DNS"
-}
-
-function Set-XboxReserveDNS {
-    Apply-DNS -DnsList @("87.228.47.200", "87.228.47.201") -DoHTemplate "https://xbox-dns.ru/dns-query" "РЕЗЕРВ XBOX"
-}
-
-function Set-ComssDNS {
-    $IPV4 = @("76.76.2.0", "76.76.10.0")
-    $IPV6 = @("2606:1a40::", "2606:1a40:1::")
-    Apply-DNS -DnsList ($IPV4 + $IPV6) -DoHTemplate "https://freedns.controld.com/comss" "COMSS DNS"
-}
-
-function Set-CloudflareDNS {
-    $IPV4 = @("1.1.1.1", "1.0.0.1")
-    $IPV6 = @("2606:4700:4700::1111", "2606:4700:4700::1001")
-    Apply-DNS -DnsList ($IPV4 + $IPV6) -DoHTemplate "https://cloudflare-dns.com/dns-query" "CLOUDFLARE"
-}
-
-function Apply-DNS ($DnsList, $DoHTemplate, $Name) {
-    $UpdatePanel = {
-        param($percent, $status, $logLine1, $logLine2)
-        [Console]::SetCursorPosition(0, 12)
-        
-        $barWidth = 44
-        $filled = [math]::Round(($percent / 100) * $barWidth)
-        $bar = ("█" * $filled) + ("░" * ($barWidth - $filled))
-        
-        $bg = "$e[48;2;30;30;30m"
-        $rst = "$e[0m"
-        $w = 66
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-        
-        $l1 = "   $e[38;2;50;255;150mУСТАНОВКА ${Name}:$e[38;2;255;255;255m $status"
-        $visibleL1 = "   УСТАНОВКА ${Name}: $status"
-        $pad1 = $w - $visibleL1.Length
-        if ($pad1 -lt 0) { $pad1 = 0 }
-        Write-Host "  $bg$l1$(" " * $pad1)$rst"
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-        
-        $l2 = "   $e[38;2;50;255;150m$bar$e[38;2;255;255;255m $($percent.ToString().PadLeft(3))% "
-        $visibleL2 = "   $bar $($percent.ToString().PadLeft(3))% "
-        $pad2 = $w - $visibleL2.Length
-        if ($pad2 -lt 0) { $pad2 = 0 }
-        Write-Host "  $bg$l2$(" " * $pad2)$rst"
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-        
-        $visibleL3 = "   $logLine1"
-        $pad3 = $w - $visibleL3.Length
-        if ($pad3 -lt 0) { $pad3 = 0 }
-        Write-Host "  $bg$e[38;2;180;180;180m$visibleL3$(" " * $pad3)$rst"
-        
-        $visibleL4 = "   $logLine2"
-        $pad4 = $w - $visibleL4.Length
-        if ($pad4 -lt 0) { $pad4 = 0 }
-        Write-Host "  $bg$e[38;2;180;180;180m$visibleL4$(" " * $pad4)$rst"
-        
-        Write-Host "  $bg$(" " * $w)$rst"
+# ──────────────────────────────────────────────────────────────────────────────
+# Централизованная база DNS-профилей
+# ──────────────────────────────────────────────────────────────────────────────
+$DnsProfiles = [ordered]@{
+    "Xbox DNS (RU)"     = @{
+        IPv4 = @("111.88.96.50", "111.88.96.51")
+        IPv6 = @("2a00:ab00:1233:26::50", "2a00:ab00:1233:26::51")
+        DoH  = "https://xbox-dns.ru/dns-query"
     }
+    "Xbox DNS (РЕЗЕРВ)" = @{
+        IPv4 = @("87.228.47.200", "87.228.47.201")
+        IPv6 = @()
+        DoH  = "https://xbox-dns.ru/dns-query"
+    }
+    "Comss DNS"         = @{
+        IPv4 = @("76.76.2.0", "76.76.10.0")
+        IPv6 = @("2606:1a40::", "2606:1a40:1::")
+        DoH  = "https://freedns.controld.com/comss"
+    }
+    "Cloudflare DNS"    = @{
+        IPv4 = @("1.1.1.1", "1.0.0.1")
+        IPv6 = @("2606:4700:4700::1111", "2606:4700:4700::1001")
+        DoH  = "https://cloudflare-dns.com/dns-query"
+    }
+}
 
-    &$UpdatePanel 10 "Инициализация параметров..." "" ""
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Определение текущего активного DNS-профиля
+# ──────────────────────────────────────────────────────────────────────────────
+function Get-CurrentDNSProfile {
+    $adapters = Get-NetAdapter | Where-Object Status -eq 'Up'
+    if (-not $adapters) { return "Нет активных адаптеров" }
+    foreach ($adapter in $adapters) {
+        $currentDns = (Get-DnsClientServerAddress `
+            -InterfaceIndex $adapter.InterfaceIndex `
+            -AddressFamily IPv4 `
+            -ErrorAction SilentlyContinue).ServerAddresses
+        if ($currentDns -and $currentDns.Count -gt 0) {
+            foreach ($name in $DnsProfiles.Keys) {
+                if ($currentDns[0] -eq $DnsProfiles[$name].IPv4[0]) { return $name }
+            }
+        }
+    }
+    return "Авто / Провайдер"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Задержка (ping) до первого IP активного профиля
+# ──────────────────────────────────────────────────────────────────────────────
+function Get-CurrentDNSLatency {
+    param([string]$ProfileName)
+    $profile = $DnsProfiles[$ProfileName]
+    if (-not $profile) { return $null }
+    $ip = $profile.IPv4[0]
+    if (-not $ip) { return $null }
+    $ping = Test-Connection -ComputerName $ip -Count 1 -ErrorAction SilentlyContinue
+    if ($ping) { return [math]::Round(($ping | Measure-Object -Property ResponseTime -Average).Average) }
+    return $null
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Статус DoH для активного профиля
+# ──────────────────────────────────────────────────────────────────────────────
+function Get-CurrentDoHStatus {
+    param([string]$ProfileName)
+    $profile = $DnsProfiles[$ProfileName]
+    if (-not $profile) { return $false }
+    $ip = $profile.IPv4[0]
+    if (-not $ip) { return $false }
+    try {
+        $doh = Get-DnsClientDohServerAddress -ServerAddress $ip -ErrorAction SilentlyContinue
+        return ($doh -and $doh.AutoUpgrade -eq $true -and $doh.AllowFallbackToUdp -eq $false)
+    } catch { return $false }
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Единая функция прогресс-панели
+# ──────────────────────────────────────────────────────────────────────────────
+function Show-ProgressPanel {
+    param(
+        [int]    $Percent,
+        [string] $Status,
+        [string] $Label,
+        [string] $LogLine1,
+        [string] $LogLine2,
+        [string] $LabelColor = "50;255;150"
+    )
+    [Console]::SetCursorPosition(0, $MenuRow)
+    $barWidth = 44
+    $filled   = [math]::Round(($Percent / 100) * $barWidth)
+    $bar      = ("█" * $filled) + ("░" * ($barWidth - $filled))
+    $bg  = "$e[48;2;30;30;30m"
+    $rst = "$e[0m"
+    $w   = 66
+
+    Write-Host "  $bg$(" " * $w)$rst"
+    $l1 = "   $e[38;2;${LabelColor}m${Label}:$e[38;2;255;255;255m $Status"
+    $pad1 = [math]::Max(0, $w - "   ${Label}: $Status".Length)
+    Write-Host "  $bg$l1$(" " * $pad1)$rst"
+
+    Write-Host "  $bg$(" " * $w)$rst"
+    $l2 = "   $e[38;2;50;255;150m$bar$e[38;2;255;255;255m $($Percent.ToString().PadLeft(3))% "
+    $pad2 = [math]::Max(0, $w - "   $bar $($Percent.ToString().PadLeft(3))% ".Length)
+    Write-Host "  $bg$l2$(" " * $pad2)$rst"
+
+    Write-Host "  $bg$(" " * $w)$rst"
+    $v3 = "   $LogLine1"; $pad3 = [math]::Max(0, $w - $v3.Length)
+    Write-Host "  $bg$e[38;2;180;180;180m$v3$(" " * $pad3)$rst"
+    $v4 = "   $LogLine2"; $pad4 = [math]::Max(0, $w - $v4.Length)
+    Write-Host "  $bg$e[38;2;180;180;180m$v4$(" " * $pad4)$rst"
+    Write-Host "  $bg$(" " * $w)$rst"
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Применение выбранного DNS-профиля
+# ──────────────────────────────────────────────────────────────────────────────
+function Apply-DNS {
+    param([string]$ProfileName)
+    $profile     = $DnsProfiles[$ProfileName]
+    $DnsList     = $profile.IPv4 + $profile.IPv6
+    $DoHTemplate = $profile.DoH
+
+    Show-ProgressPanel -Percent 10 -Status "Инициализация параметров..." `
+        -Label "УСТАНОВКА $ProfileName" -LogLine1 "" -LogLine2 ""
     Start-Sleep -Milliseconds 250
-    
-    &$UpdatePanel 30 "Сканирование сетевых интерфейсов..." "" ""
+
+    Show-ProgressPanel -Percent 30 -Status "Сканирование сетевых интерфейсов..." `
+        -Label "УСТАНОВКА $ProfileName" -LogLine1 "" -LogLine2 ""
     $adapters = Get-NetAdapter | Where-Object Status -eq 'Up'
     Start-Sleep -Milliseconds 250
-    
-    $l1 = ""
-    $l2 = ""
-    
-    &$UpdatePanel 50 "Изменение конфигурации IP..." "" ""
+
+    $l1 = ""; $l2 = ""
+    Show-ProgressPanel -Percent 50 -Status "Изменение конфигурации IP..." `
+        -Label "УСТАНОВКА $ProfileName" -LogLine1 "" -LogLine2 ""
     foreach ($adapter in $adapters) {
         try {
-            Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ServerAddresses $DnsList -ErrorAction Stop
+            Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex `
+                -ServerAddresses $DnsList -ErrorAction Stop
             $l1 = "[$($adapter.Name)] Адреса успешно назначены."
         } catch {
             $l1 = "[$($adapter.Name)] Ошибка конфигурации адресов."
         }
-        &$UpdatePanel 65 "Изменение конфигурации IP..." $l1 ""
+        Show-ProgressPanel -Percent 65 -Status "Изменение конфигурации IP..." `
+            -Label "УСТАНОВКА $ProfileName" -LogLine1 $l1 -LogLine2 ""
         Start-Sleep -Milliseconds 250
     }
-    
-    &$UpdatePanel 75 "Активация шифрования протокола DoH..." $l1 ""
+
+    Show-ProgressPanel -Percent 75 -Status "Активация шифрования DoH..." `
+        -Label "УСТАНОВКА $ProfileName" -LogLine1 $l1 -LogLine2 ""
     try {
         foreach ($server in $DnsList) {
-            Set-DnsClientDohServerAddress -ServerAddress $server -DohTemplate $DoHTemplate -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue
+            Set-DnsClientDohServerAddress -ServerAddress $server -DohTemplate $DoHTemplate `
+                -AllowFallbackToUdp $false -AutoUpgrade $true -ErrorAction SilentlyContinue
         }
         $l2 = "Безопасный туннель DoH запущен."
     } catch {
         $l2 = "Инфраструктура DoH недоступна в этой ОС."
     }
-    &$UpdatePanel 90 "Перезагрузка кэша распознавателя..." $l1 $l2
+
+    Show-ProgressPanel -Percent 90 -Status "Перезагрузка кэша распознавателя..." `
+        -Label "УСТАНОВКА $ProfileName" -LogLine1 $l1 -LogLine2 $l2
     Start-Sleep -Milliseconds 250
-    
+
     Clear-DnsClientCache
-    &$UpdatePanel 100 "Операция успешно завершена!" $l1 $l2
-    
+    Show-ProgressPanel -Percent 100 -Status "Операция успешно завершена!" `
+        -Label "УСТАНОВКА $ProfileName" -LogLine1 $l1 -LogLine2 $l2
+
     Write-Host "`n  $e[38;2;120;120;120m[ENTER] Вернуться в главное меню...$e[0m"
     [void][Console]::ReadLine()
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Сброс всех DNS
+# ──────────────────────────────────────────────────────────────────────────────
 function Clear-AllDNS {
-    $UpdatePanel = {
-        param($percent, $status, $logLine1, $logLine2)
-        [Console]::SetCursorPosition(0, 12)
-        
-        $barWidth = 44
-        $filled = [math]::Round(($percent / 100) * $barWidth)
-        $bar = ("█" * $filled) + ("░" * ($barWidth - $filled))
-        
-        $bg = "$e[48;2;30;30;30m"
-        $rst = "$e[0m"
-        $w = 66
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-        
-        $l1 = "   $e[38;2;255;255;0mСБРОС НАСТРОЕК:$e[38;2;255;255;255m $status"
-        $visibleL1 = "   СБРОС НАСТРОЕК: $status"
-        $pad1 = $w - $visibleL1.Length
-        if ($pad1 -lt 0) { $pad1 = 0 }
-        Write-Host "  $bg$l1$(" " * $pad1)$rst"
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-        
-        $l2 = "   $e[38;2;50;255;150m$bar$e[38;2;255;255;255m $($percent.ToString().PadLeft(3))% "
-        $visibleL2 = "   $bar $($percent.ToString().PadLeft(3))% "
-        $pad2 = $w - $visibleL2.Length
-        if ($pad2 -lt 0) { $pad2 = 0 }
-        Write-Host "  $bg$l2$(" " * $pad2)$rst"
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-        
-        $visibleL3 = "   $logLine1"
-        $pad3 = $w - $visibleL3.Length
-        if ($pad3 -lt 0) { $pad3 = 0 }
-        Write-Host "  $bg$e[38;2;180;180;180m$visibleL3$(" " * $pad3)$rst"
-        
-        $visibleL4 = "   $logLine2"
-        $pad4 = $w - $visibleL4.Length
-        if ($pad4 -lt 0) { $pad4 = 0 }
-        Write-Host "  $bg$e[38;2;180;180;180m$visibleL4$(" " * $pad4)$rst"
-        
-        Write-Host "  $bg$(" " * $w)$rst"
-    }
-
-    &$UpdatePanel 10 "Сканирование адаптеров..." "" ""
+    Show-ProgressPanel -Percent 10 -Status "Сканирование адаптеров..." `
+        -Label "СБРОС НАСТРОЕК" -LogLine1 "" -LogLine2 "" -LabelColor "255;255;0"
     Start-Sleep -Milliseconds 250
-    
+
     $adapters = Get-NetAdapter | Where-Object Status -eq 'Up'
-    $l1 = ""
-    $l2 = ""
-    
-    &$UpdatePanel 40 "Перевод режимов в положение Авто..." "" ""
+    $l1 = ""; $l2 = ""
+
+    Show-ProgressPanel -Percent 40 -Status "Перевод режимов в положение Авто..." `
+        -Label "СБРОС НАСТРОЕК" -LogLine1 "" -LogLine2 "" -LabelColor "255;255;0"
     foreach ($adapter in $adapters) {
         try {
-            Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex -ResetServerAddresses -ErrorAction Stop
+            Set-DnsClientServerAddress -InterfaceIndex $adapter.InterfaceIndex `
+                -ResetServerAddresses -ErrorAction Stop
             $l1 = "[$($adapter.Name)] Возвращено автоматическое получение."
         } catch {
             $l1 = "[$($adapter.Name)] Ошибка деконфигурации адресов."
         }
-        &$UpdatePanel 60 "Перевод режимов в положение Авто..." $l1 ""
+        Show-ProgressPanel -Percent 60 -Status "Перевод режимов в положение Авто..." `
+            -Label "СБРОС НАСТРОЕК" -LogLine1 $l1 -LogLine2 "" -LabelColor "255;255;0"
         Start-Sleep -Milliseconds 250
     }
-    
-    &$UpdatePanel 75 "Очистка таблиц шифрования DoH..." $l1 ""
-    $TargetIPs = @("176.99.11.77", "80.78.247.254", "2a00:f940:2:4:2::5d1b", "2a00:f940:2:4:2::21ed", "1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001", "111.88.96.50", "111.88.96.51", "87.228.47.200", "87.228.47.201", "76.76.2.0", "76.76.10.0")
+
+    Show-ProgressPanel -Percent 75 -Status "Очистка таблиц шифрования DoH..." `
+        -Label "СБРОС НАСТРОЕК" -LogLine1 $l1 -LogLine2 "" -LabelColor "255;255;0"
+    $TargetIPs = @()
+    foreach ($profile in $DnsProfiles.Values) {
+        foreach ($ip in ($profile.IPv4 + $profile.IPv6)) {
+            if ($ip) { $TargetIPs += $ip }
+        }
+    }
     foreach ($ip in $TargetIPs) {
-        Set-DnsClientDohServerAddress -ServerAddress $ip -AllowFallbackToUdp $true -AutoUpgrade $true -ErrorAction SilentlyContinue
+        Set-DnsClientDohServerAddress -ServerAddress $ip `
+            -AllowFallbackToUdp $true -AutoUpgrade $true -ErrorAction SilentlyContinue
     }
     $l2 = "Параметры безопасности DoH аннулированы."
-    
-    &$UpdatePanel 90 "Очистка локального кэша DNS..." $l1 $l2
+
+    Show-ProgressPanel -Percent 90 -Status "Очистка локального кэша DNS..." `
+        -Label "СБРОС НАСТРОЕК" -LogLine1 $l1 -LogLine2 $l2 -LabelColor "255;255;0"
     Start-Sleep -Milliseconds 250
-    
+
     Clear-DnsClientCache
-    &$UpdatePanel 100 "Сброс успешно выполнен!" $l1 $l2
-    
+    Show-ProgressPanel -Percent 100 -Status "Сброс успешно выполнен!" `
+        -Label "СБРОС НАСТРОЕК" -LogLine1 $l1 -LogLine2 $l2 -LabelColor "255;255;0"
+
     Write-Host "`n  $e[38;2;120;120;120m[ENTER] Вернуться в главное меню...$e[0m"
     [void][Console]::ReadLine()
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Очистка только кэша DNS
+# ──────────────────────────────────────────────────────────────────────────────
 function Clear-DNSCacheOnly {
     Write-Host "  $e[38;2;50;255;150mОчистка локального кэша DNS...$e[0m`n"
     Clear-DnsClientCache
@@ -215,6 +258,55 @@ function Clear-DNSCacheOnly {
     [void][Console]::ReadLine()
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Проверка задержки (ping) до всех DNS-серверов
+# ──────────────────────────────────────────────────────────────────────────────
+function Test-DNSLatency {
+    Write-Host "  $e[38;2;50;255;150mПроверка задержки и разрешения DNS-серверов...$e[0m`n"
+    $testDomains = @("google.com", "github.com", "microsoft.com")
+    foreach ($name in $DnsProfiles.Keys) {
+        Write-Host "  $e[38;2;100;200;255m$name$e[0m"
+        foreach ($ip in $DnsProfiles[$name].IPv4) {
+            Write-Host -NoNewline "    $e[38;2;180;180;180m$($ip.PadRight(20))$e[0m"
+            $ping = Test-Connection -ComputerName $ip -Count 2 -ErrorAction SilentlyContinue
+            if ($ping) {
+                $avg   = [math]::Round(($ping | Measure-Object -Property ResponseTime -Average).Average)
+                $color = if ($avg -lt 50) { "50;255;150" } elseif ($avg -lt 150) { "255;200;0" } else { "255;100;100" }
+                Write-Host "$e[38;2;${color}m${avg} ms$e[0m $e[38;2;120;120;120m(ping)$e[0m"
+            } else {
+                Write-Host "$e[38;2;255;100;100mНЕДОСТУПЕН$e[0m"
+            }
+        }
+        $primaryIp = $DnsProfiles[$name].IPv4[0]
+        if ($primaryIp) {
+            Write-Host -NoNewline "    $e[38;2;180;180;180m$("Resolve-DnsName".PadRight(20))$e[0m"
+            $totalMs = 0; $success = 0
+            foreach ($domain in $testDomains) {
+                try {
+                    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                    Resolve-DnsName -Name $domain -Server $primaryIp -Type A -ErrorAction Stop | Out-Null
+                    $sw.Stop()
+                    $totalMs += $sw.ElapsedMilliseconds
+                    $success++
+                } catch { }
+            }
+            if ($success -gt 0) {
+                $avgRes  = [math]::Round($totalMs / $success)
+                $resColor = if ($avgRes -lt 100) { "50;255;150" } elseif ($avgRes -lt 300) { "255;200;0" } else { "255;100;100" }
+                Write-Host "$e[38;2;${resColor}m${avgRes} ms$e[0m $e[38;2;120;120;120m(resolve avg/$($testDomains.Count) domains)$e[0m"
+            } else {
+                Write-Host "$e[38;2;255;100;100mНЕ РАБОТАЕТ$e[0m $e[38;2;120;120;120m(resolve)$e[0m"
+            }
+        }
+        Write-Host ""
+    }
+    Write-Host "  $e[38;2;120;120;120m[ENTER] Вернуться в главное меню...$e[0m"
+    [void][Console]::ReadLine()
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Проверка и установка обновлений
+# ──────────────────────────────────────────────────────────────────────────────
 function Check-Update {
     Write-Host "  $e[38;2;50;255;150mПоиск обновлений...$e[0m`n"
     try {
@@ -236,17 +328,21 @@ function Check-Update {
             Write-Host "  $e[38;2;255;100;100mНе удалось определить версию на сервере.$e[0m"
         }
     } catch {
-        Write-Host "  $e[38;2;255;100;100mОшибка при проверке обновлений. Проверьте соединение и URL.$e[0m"
+        Write-Host "  $e[38;2;255;100;100mОшибка при проверке обновлений. Проверьте соединение.$e[0m"
     }
     Write-Host "`n  $e[38;2;120;120;120m[ENTER] Вернуться в главное меню...$e[0m"
     [void][Console]::ReadLine()
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Заголовок с отображением текущего активного DNS
+# ──────────────────────────────────────────────────────────────────────────────
 function Show-Header {
-    $c = "$e[38;2;50;255;150m"
+    $c   = "$e[38;2;50;255;150m"
     $rst = "$e[0m"
     $vStr = "      v$AppVersion"
-    
+    $currentDns = Get-CurrentDNSProfile
+
     $logo = @(
         "╭──────────────────────────────────────────────────────────────────╮",
         "│                                                                  │",
@@ -260,22 +356,56 @@ function Show-Header {
         "│$($vStr.PadRight(66))│",
         "╰──────────────────────────────────────────────────────────────────╯"
     )
-    
-    foreach ($line in $logo) {
-        Write-Host "$c$line$rst"
+    foreach ($line in $logo) { Write-Host "$c$line$rst" }
+
+    # Строка статуса → строка 11; пустая → строка 12; меню → строка 13 ($MenuRow)
+    $latencyStr = ""; $dohStr = ""
+    if ($currentDns -ne "Авто / Провайдер" -and $currentDns -ne "Нет активных адаптеров") {
+        $lat = Get-CurrentDNSLatency -ProfileName $currentDns
+        if ($null -ne $lat) {
+            $lc = if ($lat -lt 50) { "50;255;150" } elseif ($lat -lt 150) { "255;200;0" } else { "255;100;100" }
+            $latencyStr = "  $e[38;2;90;90;90m—$e[0m  $e[38;2;${lc}m${lat} ms$e[0m"
+        }
+        $dohOn = Get-CurrentDoHStatus -ProfileName $currentDns
+        $dohStr = if ($dohOn) { "  $e[38;2;50;200;255m[DoH $([char]0x2713)]$e[0m" } else { "  $e[38;2;100;100;100m[UDP]$e[0m" }
     }
+    Write-Host "  $e[38;2;120;120;120mАктивный DNS: $e[38;2;50;255;150m$currentDns$rst$latencyStr$dohStr"
     Write-Host ""
 }
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Диспетчер действий
+# ──────────────────────────────────────────────────────────────────────────────
+function Invoke-MenuOption {
+    param([int]$Index)
+    switch ($Index) {
+        0 { Apply-DNS "Xbox DNS (RU)" }
+        1 { Apply-DNS "Xbox DNS (РЕЗЕРВ)" }
+        2 { Apply-DNS "Comss DNS" }
+        3 { Apply-DNS "Cloudflare DNS" }
+        4 { Clear-AllDNS }
+        5 { Test-DNSLatency }
+        6 { Clear-DNSCacheOnly }
+        7 { Check-Update }
+        8 { Exit }
+    }
+}
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Данные меню
+# tileWidth=20, tileGap=3 → строка меню = 2 + 20 + 3 + 20 + 3 + 20 = 68 символов
+# (совпадает с шириной шапки)
+# ──────────────────────────────────────────────────────────────────────────────
 $options = @(
-    "Xbox DNS (RU)",
-    "Xbox DNS (РЕЗЕРВ)",
-    "Comss DNS (Нейросети)",
-    "Cloudflare DNS (Global)",
-    "СБРОСИТЬ ВСЁ (Авто/Провайдер)",
-    "Очистить кэш DNS",
-    "Проверить обновления",
-    "Выход"
+    "Xbox DNS (RU)",        # ≤ 20 ✓
+    "Xbox DNS (РЕЗЕРВ)",    # ≤ 20 ✓
+    "Comss DNS",            # ≤ 20 ✓
+    "Cloudflare DNS",       # ≤ 20 ✓
+    "СБРОСИТЬ ВСЁ (Авто)", # ≤ 20 ✓
+    "Скорость DNS",         # ≤ 20 ✓
+    "Очистить кэш DNS",     # ≤ 20 ✓
+    "Проверить обновления", # ≤ 20 ✓
+    "Выход"                 # ≤ 20 ✓
 )
 
 $descriptions = @(
@@ -284,87 +414,95 @@ $descriptions = @(
     "Smart DNS (Control D) для доступа к ChatGPT, Claude, Gemini.",
     "Глобальный быстрый DNS от Cloudflare. Стабильность и скорость.",
     "Полный возврат к автоматическому получению DNS от провайдера.",
+    "Тест задержки (ping) до всех известных DNS-серверов.",
     "Быстрая очистка локального кэша DNS без изменения настроек.",
     "Загрузка и установка последней версии скрипта с сервера.",
     "Закрыть программу."
 )
 
+$tileWidth = 20
+$tileGap   = 3
+$numCols   = 3
+
 $selectedIndex = 0
-$tileWidth = 31
+
 
 Clear-Host
 Show-Header
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Главный цикл меню — сетка 3 × 3
+# ──────────────────────────────────────────────────────────────────────────────
 while ($true) {
-    [Console]::SetCursorPosition(0, 12)
-    
-    for ($r = 0; $r -lt 4; $r++) {
-        $idx1 = $r * 2
-        $idx2 = $r * 2 + 1
-        
+    [Console]::SetCursorPosition(0, $MenuRow)
+    $currentProfileName = Get-CurrentDNSProfile
+
+    $numRows = [math]::Ceiling($options.Count / $numCols)
+
+    for ($r = 0; $r -lt $numRows; $r++) {
         for ($line = 1; $line -le 3; $line++) {
             $rowStr = "  "
-            
-            foreach ($i in @($idx1, $idx2)) {
-                $text = $options[$i]
-                $len = $text.Length
-                $padLeft = [math]::Floor(($tileWidth - $len) / 2)
-                $padRight = $tileWidth - $len - $padLeft
-                
-                if ($i -eq $selectedIndex) {
-                    $bg = "$e[48;2;50;255;150m"
-                    $fg = "$e[38;2;0;0;0m$e[1m"
+
+            for ($c = 0; $c -lt $numCols; $c++) {
+                $i = $r * $numCols + $c
+
+                if ($i -lt $options.Count) {
+                    $text     = $options[$i]
+                    $len      = $text.Length
+                    $padLeft  = [math]::Floor(($tileWidth - $len) / 2)
+                    $padRight = $tileWidth - $len - $padLeft
+
+                    if ($i -eq $selectedIndex) {
+                        $bg = "$e[48;2;50;255;150m"; $fg = "$e[38;2;0;0;0m$e[1m"
+                    } elseif ($options[$i] -eq $currentProfileName) {
+                        $bg = "$e[48;2;0;80;180m";   $fg = "$e[38;2;255;255;255m$e[1m"
+                    } else {
+                        $bg = "$e[48;2;35;35;35m";  $fg = "$e[38;2;200;200;200m"
+                    }
+                    $rst = "$e[0m"
+
+                    if ($line -eq 1 -or $line -eq 3) {
+                        $rowStr += "$bg$(" " * $tileWidth)$rst"
+                    } else {
+                        $rowStr += "$bg$fg$((" " * $padLeft) + $text + (" " * $padRight))$rst"
+                    }
                 } else {
-                    $bg = "$e[48;2;35;35;35m"
-                    $fg = "$e[38;2;200;200;200m"
+                    # пустая ячейка (если количество пунктов не кратно numCols)
+                    $rowStr += (" " * $tileWidth)
                 }
-                $rst = "$e[0m"
-                
-                if ($line -eq 1 -or $line -eq 3) {
-                    $empty = " " * $tileWidth
-                    $rowStr += "$bg$empty$rst"
-                } else {
-                    $centeredText = (" " * $padLeft) + $text + (" " * $padRight)
-                    $rowStr += "$bg$fg$centeredText$rst"
-                }
-                
-                if ($i -eq $idx1) { $rowStr += "    " }
+
+                if ($c -lt $numCols - 1) { $rowStr += (" " * $tileGap) }
             }
             Write-Host $rowStr
         }
         Write-Host ""
     }
-    
+
     Write-Host "  $e[38;2;120;120;120m──────────────────────────────────────────────────────────────────$e[0m"
     Write-Host "  $e[38;2;0;255;255mИнфо:$e[0m $($descriptions[$selectedIndex].PadRight(80))"
     Write-Host "  $e[38;2;120;120;120m──────────────────────────────────────────────────────────────────$e[0m"
-    Write-Host "  $e[38;2;120;120;120m[СТРЕЛКИ] Навигация   [ENTER] Выбор                               $e[0m"
-    
+    Write-Host "  $e[38;2;120;120;120m[СТРЕЛКИ] Навигация  [ENTER] Выбор  [1-9] Быстрый выбор  [ESC] Выход$e[0m"
+
     $key = [Console]::ReadKey($true)
-    
-    if ($key.Key -eq 'RightArrow') {
-        $selectedIndex = ($selectedIndex + 1) % $options.Count
-    } elseif ($key.Key -eq 'LeftArrow') {
-        $selectedIndex = ($selectedIndex - 1 + $options.Count) % $options.Count
-    } elseif ($key.Key -eq 'DownArrow') {
-        $selectedIndex = ($selectedIndex + 2) % $options.Count
-    } elseif ($key.Key -eq 'UpArrow') {
-        $selectedIndex = ($selectedIndex - 2 + $options.Count) % $options.Count
-    } elseif ($key.Key -eq 'Enter') {
-        Clear-Host
-        Show-Header
-        [Console]::SetCursorPosition(0, 12)
-        switch ($selectedIndex) {
-            0 { Set-XboxDNS }
-            1 { Set-XboxReserveDNS }
-            2 { Set-ComssDNS }
-            3 { Set-CloudflareDNS }
-            4 { Clear-AllDNS }
-            5 { Clear-DNSCacheOnly }
-            6 { Check-Update }
-            7 { Exit }
+
+    if     ($key.Key -eq 'Escape')     { Exit }
+    elseif ($key.Key -eq 'RightArrow') { $selectedIndex = ($selectedIndex + 1)              % $options.Count }
+    elseif ($key.Key -eq 'LeftArrow')  { $selectedIndex = ($selectedIndex - 1 + $options.Count) % $options.Count }
+    elseif ($key.Key -eq 'DownArrow')  { $selectedIndex = ($selectedIndex + $numCols)        % $options.Count }
+    elseif ($key.Key -eq 'UpArrow')    { $selectedIndex = ($selectedIndex - $numCols + $options.Count) % $options.Count }
+    elseif ($key.Key -eq 'Enter') {
+        Clear-Host; Show-Header
+        [Console]::SetCursorPosition(0, $MenuRow)
+        Invoke-MenuOption $selectedIndex
+        Clear-Host; Show-Header
+    } elseif ($key.KeyChar -ge [char]'1' -and $key.KeyChar -le [char]'9') {
+        $numIdx = [int]$key.KeyChar - [int][char]'1'
+        if ($numIdx -lt $options.Count) {
+            $selectedIndex = $numIdx
+            Clear-Host; Show-Header
+            [Console]::SetCursorPosition(0, $MenuRow)
+            Invoke-MenuOption $selectedIndex
+            Clear-Host; Show-Header
         }
-        Clear-Host
-        Show-Header
     }
 }
