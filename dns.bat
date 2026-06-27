@@ -14,7 +14,7 @@ exit /b
 #>
 
 $ScriptPath = $env:SCRIPT_PATH
-$AppVersion = "1.3"
+$AppVersion = "1.4"
 $UpdateUrl  = "https://raw.githubusercontent.com/D1verlin/DNS-Manager/main/dns.bat"
 
 $e       = [char]27
@@ -31,13 +31,15 @@ $global:cachedDoHStr      = ""
 try {
     if ($host.Name -eq "ConsoleHost") {
         $w = 95
-        $h = 32
-        $rect = New-Object System.Management.Automation.Host.Size($w, $h)
-        if ($host.UI.RawUI.BufferSize.Width -lt $w) {
-            $host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($w, $host.UI.RawUI.BufferSize.Height)
-        }
-        $host.UI.RawUI.WindowSize = $rect
-        $host.UI.RawUI.BufferSize = $rect
+        $h = 36
+        # Сначала расширяем буфер, чтобы окно могло вырасти
+        $bufW = [math]::Max($host.UI.RawUI.BufferSize.Width, $w)
+        $bufH = [math]::Max($host.UI.RawUI.BufferSize.Height, $h)
+        $host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($bufW, $bufH)
+        # Затем устанавливаем размер окна
+        $host.UI.RawUI.WindowSize = New-Object System.Management.Automation.Host.Size($w, $h)
+        # И наконец синхронизируем буфер точно с окном
+        $host.UI.RawUI.BufferSize = New-Object System.Management.Automation.Host.Size($w, $h)
     }
 } catch {}
 
