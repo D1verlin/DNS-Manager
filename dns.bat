@@ -14,7 +14,7 @@ exit /b
 #>
 
 $ScriptPath = $env:SCRIPT_PATH
-$AppVersion = "1.4"
+$AppVersion = "1.6"
 $UpdateUrl  = "https://raw.githubusercontent.com/D1verlin/DNS-Manager/main/dns.bat"
 
 $e       = [char]27
@@ -31,7 +31,7 @@ $global:cachedDoHStr      = ""
 try {
     if ($host.Name -eq "ConsoleHost") {
         $w = 95
-        $h = 36
+        $h = 38
         # Сначала расширяем буфер, чтобы окно могло вырасти
         $bufW = [math]::Max($host.UI.RawUI.BufferSize.Width, $w)
         $bufH = [math]::Max($host.UI.RawUI.BufferSize.Height, $h)
@@ -66,6 +66,13 @@ $DnsProfiles = [ordered]@{
         IPv4 = @("1.1.1.1", "1.0.0.1")
         IPv6 = @("2606:4700:4700::1111", "2606:4700:4700::1001")
         DoH  = "https://cloudflare-dns.com/dns-query"
+    }
+    "Malw.link DNS"     = @{
+        IPv4 = @("95.216.204.218", "80.253.249.40")
+        IPv6 = @("2a01:4f9:c014:6dac::1", "2a12:bec4:1460:5b7::2")
+        DoH  = "https://dns.malw.link/dns-query"
+        DoT  = "dns.malw.link"
+        Stamp= "sdns://AwIAAAAAAAAADjk1LjIxNi4yMDQuMjE4AA1kbnMubWFsdy5saW5r"
     }
 }
 
@@ -477,12 +484,13 @@ function Invoke-MenuOption {
         1 { Apply-DNS "Xbox DNS (РЕЗЕРВ)" }
         2 { Apply-DNS "Comss DNS" }
         3 { Apply-DNS "Cloudflare DNS" }
-        4 { Clear-AllDNS }
-        5 { Test-DNSLatency }
-        6 { Clear-DNSCacheOnly }
-        7 { Edit-BypassList }
-        8 { Check-Update }
-        9 { Exit }
+        4 { Apply-DNS "Malw.link DNS" }
+        5 { Clear-AllDNS }
+        6 { Test-DNSLatency }
+        7 { Clear-DNSCacheOnly }
+        8 { Edit-BypassList }
+        9 { Check-Update }
+        10 { Exit }
     }
 }
 
@@ -496,6 +504,7 @@ $options = @(
     "Xbox DNS (РЕЗЕРВ)",    # ≤ 20 ✓
     "Comss DNS",            # ≤ 20 ✓
     "Cloudflare DNS",       # ≤ 20 ✓
+    "Malw.link DNS",        # ≤ 20 ✓
     "СБРОСИТЬ ВСЁ (Авто)", # ≤ 20 ✓
     "Скорость DNS",         # ≤ 20 ✓
     "Очистить кэш DNS",     # ≤ 20 ✓
@@ -509,6 +518,7 @@ $descriptions = @(
     "Резервный DNS для Xbox. Используйте при ошибках основного.",
     "Smart DNS (Control D) для доступа к ChatGPT, Claude, Gemini.",
     "Глобальный быстрый DNS от Cloudflare. Стабильность и скорость.",
+    "Разблокирует недоступные сайты, блокирует рекламу и трекеры.",
     "Полный возврат к автоматическому получению DNS от провайдера.",
     "Тест задержки (ping) до всех известных DNS-серверов.",
     "Быстрая очистка локального кэша DNS без изменения настроек.",
@@ -519,7 +529,7 @@ $descriptions = @(
 
 $tileWidth = 20
 $tileGap   = 3
-$numCols   = 4
+$numCols   = 3
 
 $selectedIndex = 0
 
@@ -534,23 +544,15 @@ while ($true) {
     [Console]::SetCursorPosition(0, $MenuRow)
     $currentProfileName = $global:cachedProfileName
 
-    $numRows = [math]::Ceiling($options.Count / $numCols)
-
-    for ($r = 0; $r -lt $numRows; $r++) {
-        if ($r -eq 0) {
-            Write-Host "  $e[38;2;100;200;255m⚡ НАСТРОЙКА DNS-ПРОФИЛЯ$e[0m"
-        } elseif ($r -eq 1) {
-            Write-Host ""
-            Write-Host "  $e[38;2;255;180;100m🛠️ УТИЛИТЫ И ИНСТРУМЕНТЫ$e[0m"
-        }
-
+    # Render Profiles Section
+    Write-Host "  $e[38;2;100;200;255m⚡ НАСТРОЙКА DNS-ПРОФИЛЯ$e[0m"
+    $profileRows = [math]::Ceiling(5 / $numCols)
+    for ($r = 0; $r -lt $profileRows; $r++) {
         for ($line = 1; $line -le 3; $line++) {
             $rowStr = "  "
-
             for ($c = 0; $c -lt $numCols; $c++) {
                 $i = $r * $numCols + $c
-
-                if ($i -lt $options.Count) {
+                if ($i -lt 5) {
                     $text     = $options[$i]
                     $len      = $text.Length
                     $padLeft  = [math]::Floor(($tileWidth - $len) / 2)
@@ -561,11 +563,7 @@ while ($true) {
                     } elseif ($options[$i] -eq $currentProfileName) {
                         $bg = "$e[48;2;0;80;180m";   $fg = "$e[38;2;255;255;255m$e[1m"
                     } else {
-                        if ($i -lt 4) {
-                            $bg = "$e[48;2;25;40;50m";  $fg = "$e[38;2;150;200;255m"
-                        } else {
-                            $bg = "$e[48;2;40;35;30m";  $fg = "$e[38;2;220;180;140m"
-                        }
+                        $bg = "$e[48;2;25;40;50m";  $fg = "$e[38;2;150;200;255m"
                     }
                     $rst = "$e[0m"
 
@@ -575,10 +573,44 @@ while ($true) {
                         $rowStr += "$bg$fg$((" " * $padLeft) + $text + (" " * $padRight))$rst"
                     }
                 } else {
-                    # пустая ячейка (если количество пунктов не кратно numCols)
                     $rowStr += (" " * $tileWidth)
                 }
+                if ($c -lt $numCols - 1) { $rowStr += (" " * $tileGap) }
+            }
+            Write-Host $rowStr
+        }
+        Write-Host ""
+    }
 
+    # Render Utilities Section
+    Write-Host "  $e[38;2;255;180;100m🛠️ УТИЛИТЫ И ИНСТРУМЕНТЫ$e[0m"
+    $utilityRows = [math]::Ceiling(6 / $numCols)
+    for ($r = 0; $r -lt $utilityRows; $r++) {
+        for ($line = 1; $line -le 3; $line++) {
+            $rowStr = "  "
+            for ($c = 0; $c -lt $numCols; $c++) {
+                $i = 5 + ($r * $numCols + $c)
+                if ($i -lt 11) {
+                    $text     = $options[$i]
+                    $len      = $text.Length
+                    $padLeft  = [math]::Floor(($tileWidth - $len) / 2)
+                    $padRight = $tileWidth - $len - $padLeft
+
+                    if ($i -eq $selectedIndex) {
+                        $bg = "$e[48;2;50;255;150m"; $fg = "$e[38;2;0;0;0m$e[1m"
+                    } else {
+                        $bg = "$e[48;2;40;35;30m";  $fg = "$e[38;2;220;180;140m"
+                    }
+                    $rst = "$e[0m"
+
+                    if ($line -eq 1 -or $line -eq 3) {
+                        $rowStr += "$bg$(" " * $tileWidth)$rst"
+                    } else {
+                        $rowStr += "$bg$fg$((" " * $padLeft) + $text + (" " * $padRight))$rst"
+                    }
+                } else {
+                    $rowStr += (" " * $tileWidth)
+                }
                 if ($c -lt $numCols - 1) { $rowStr += (" " * $tileGap) }
             }
             Write-Host $rowStr
@@ -615,7 +647,7 @@ while ($true) {
             Clear-Host; Show-Header
         }
     } elseif ($key.KeyChar -eq [char]'0') {
-        $selectedIndex = 9
+        $selectedIndex = 10
         Clear-Host; Show-Header
         [Console]::SetCursorPosition(0, $MenuRow)
         Invoke-MenuOption $selectedIndex
